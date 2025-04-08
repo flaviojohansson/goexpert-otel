@@ -22,3 +22,7 @@ curl -X POST localhost:8080 -d '{"cep": "80530000"}'
 ```
 http://localhost:9411
 ```
+4. interromper os serviços e fazer a limpeza final, tal qual O Lobo do PulpFiction
+```
+docker compose down -v
+```
