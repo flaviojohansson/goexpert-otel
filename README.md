@@ -10,7 +10,8 @@ git clone https://github.com/flaviojohansson/goexpert-otel
 
 cd goexpert-otel
 
-# Para efeito de aprendizado, este repositório já possui um arquivo .env com a chave da Weather API
+# crie um arquivo .env com a chave para o serviço ex:
+# echo "WEATHER_API_KEY=b193f39823d249099e4141815252303" > .env
 
 docker compose up -d
 ```
