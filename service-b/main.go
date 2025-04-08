@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,7 +11,10 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"go.opentelemetry.io/otel"
 )
 
 const (
@@ -18,7 +22,11 @@ const (
 	weatherURL = "https://api.weatherapi.com/v1/current.json?key=%s&q=%s&aqi=no"
 )
 
-var weatherAPIKey string // API key da WeatherAPI
+var (
+	serviceName   = os.Getenv("OTEL_SERVICE_NAME")
+	collectorURL  = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	weatherAPIKey string // API key da WeatherAPI
+)
 
 type ViaCEPResponse struct {
 	Localidade string `json:"localidade"`
@@ -35,7 +43,11 @@ func isNumeric(s string) bool {
 	return err == nil
 }
 
-func getTemperatura(localidade string) (float64, float64, float64, error) {
+func getTemperatura(c *gin.Context, localidade string) (float64, float64, float64, error) {
+
+	tracer := otel.Tracer("service-b-tracer")
+	_, span := tracer.Start(c.Request.Context(), "getTemperatura")
+	defer span.End()
 
 	resp, err := http.Get(fmt.Sprintf(weatherURL, weatherAPIKey, url.QueryEscape(localidade)))
 	if err != nil {
@@ -64,7 +76,12 @@ func getTemperatura(localidade string) (float64, float64, float64, error) {
 	return tempC, tempF, tempK, nil
 }
 
-func getLocalidade(cep string) (string, error) {
+func getLocalidade(c *gin.Context, cep string) (string, error) {
+
+	tracer := otel.Tracer("service-b-tracer")
+	_, span := tracer.Start(c.Request.Context(), "getLocalidade")
+	defer span.End()
+
 	resp, err := http.Get(fmt.Sprintf(viaCEPURL, cep))
 	if err != nil {
 		return "", err
@@ -88,24 +105,23 @@ func getLocalidade(cep string) (string, error) {
 	return viaCEPResponse.Localidade, nil
 }
 
-func climaHandler(w http.ResponseWriter, r *http.Request) {
+func climaHandler(c *gin.Context) {
 
-	log.Println("Received request for weather data")
-	cep := r.URL.Query().Get("cep")
+	cep := c.Query("cep")
 	if len(cep) != 8 || !isNumeric(cep) {
-		http.Error(w, `{"message": "invalid zipcode"}`, http.StatusUnprocessableEntity)
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"message": "invalid zipcode"})
 		return
 	}
 
-	localidade, err := getLocalidade(cep)
+	localidade, err := getLocalidade(c, cep)
 	if err != nil {
-		http.Error(w, `{"message": "cannot find zipcode"}`, http.StatusNotFound)
+		c.JSON(http.StatusNotFound, gin.H{"message": "cannot find zipcode"})
 		return
 	}
 
-	tempC, tempF, tempK, err := getTemperatura(localidade)
+	tempC, tempF, tempK, err := getTemperatura(c, localidade)
 	if err != nil {
-		http.Error(w, `{"message": "error fetching weather data"}`, http.StatusInternalServerError)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "error fetching weather data"})
 		return
 	}
 
@@ -115,14 +131,31 @@ func climaHandler(w http.ResponseWriter, r *http.Request) {
 		"temp_K": tempK,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	c.JSON(http.StatusOK, response)
 }
 
 func main() {
 	godotenv.Load()
 	weatherAPIKey = os.Getenv("WEATHER_API_KEY")
 
-	http.HandleFunc("/temperatura", climaHandler)
-	http.ListenAndServe(":8081", nil)
+	// Initialize OpenTelemetry
+	ctx := context.Background()
+	_, shutdown, err := InitTracer(ctx, serviceName, collectorURL)
+
+	if err != nil {
+		log.Fatalf("failed to initialize OpenTelemetry: %s, %v", collectorURL, err)
+	}
+	defer shutdown(ctx)
+
+	// // Set up propagator (should already be in your InitTracer)
+	// otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+	// 	propagation.TraceContext{},
+	// 	propagation.Baggage{},
+	// ))
+
+	r := gin.Default()
+	r.Use(otelgin.Middleware(serviceName))
+	r.GET("/temperatura", climaHandler)
+	r.Run(":8081")
+
 }
